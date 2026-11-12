@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graass Studio</title>
+<meta name="description" content="Graass Studio: a stylized GPU grass field with wind, light and color you can tweak and share.">
+<meta name="color-scheme" content="dark light">
+<script>
+  // apply a saved theme before first paint
+  try { const t = localStorage.getItem("theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="c" aria-label="Animated grass field"></canvas>
+
+<div class="brand">graass<span>studio</span></div>
+<div class="stats" id="stats" aria-live="off"></div>
+
+<aside class="panel glass" id="panel" aria-label="Grass settings">
+  <span class="glint" aria-hidden="true"></span>
+  <nav class="tabs" id="tabs" role="tablist"><span class="lens" id="lens" aria-hidden="true"></span></nav>
+  <div class="pages" id="pages"></div>
+</aside>
+
+<div class="dock glass" id="dock" role="toolbar" aria-label="Studio actions">
+  <span class="glint" aria-hidden="true"></span>
+  <button class="dock-btn" id="b-panel" data-tip="Settings  H" aria-label="Toggle settings" aria-expanded="true">
+    <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+  </button>
+  <button class="dock-btn" id="b-presets" data-tip="Presets" aria-label="Presets" aria-haspopup="menu" aria-expanded="false">
+    <svg viewBox="0 0 24 24"><path d="M12 3c.5 4 2 5.5 6 6-4 .5-5.5 2-6 6-.5-4-2-5.5-6-6 4-.5 5.5-2 6-6z"/><path d="M18.5 15.5c.2 1.6.8 2.2 2.5 2.5-1.7.3-2.3.9-2.5 2.5-.2-1.6-.8-2.2-2.5-2.5 1.7-.3 2.3-.9 2.5-2.5z"/></svg>
+  </button>
+  <button class="dock-btn" id="b-random" data-tip="Randomize  R" aria-label="Randomize">
+    <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4"/><circle cx="9" cy="9" r=".9" class="dot"/><circle cx="15" cy="15" r=".9" class="dot"/><circle cx="15" cy="9" r=".9" class="dot"/><circle cx="9" cy="15" r=".9" class="dot"/></svg>
+  </button>
+  <button class="dock-btn" id="b-pause" data-tip="Pause  Space" aria-label="Pause" aria-pressed="false">
+    <svg viewBox="0 0 24 24" class="i-pause"><path d="M9 6v12M15 6v12"/></svg>
+    <svg viewBox="0 0 24 24" class="i-play"><path d="M8 5.5v13l10-6.5z"/></svg>
+  </button>
+  <button class="dock-btn" id="b-shot" data-tip="Save image" aria-label="Save image">
+    <svg viewBox="0 0 24 24"><path d="M4 8.5A2.5 2.5 0 0 1 6.5 6H8l1.5-2h5L16 6h1.5A2.5 2.5 0 0 1 20 8.5v8a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5z"/><circle cx="12" cy="12.5" r="3.5"/></svg>
+  </button>
+  <button class="dock-btn" id="b-share" data-tip="Copy link" aria-label="Copy share link">
+    <svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>
+  </button>
+  <button class="dock-btn" id="b-theme" data-tip="Theme" aria-label="Toggle light or dark interface">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" class="half"/></svg>
+  </button>
+</div>
+
+<div class="menu glass" id="menu" role="menu" aria-label="Presets"></div>
+<div class="toast" id="toast" role="status"></div>
+
+<script src="main.js"></script>
+</body>
+</html>
