@@ -197,17 +197,17 @@ void main(){
 const objFS = `#version 300 es
 precision highp float;
 in vec2 vUV; in float vFog; in float vH;
-uniform sampler2D uTex; uniform vec3 uFogCol, uShade; uniform float uBright;
+uniform sampler2D uTex; uniform vec3 uFogCol, uShade, uTint; uniform float uBright;
 out vec4 o;
 void main(){
   vec4 c = texture(uTex, vUV);          // premultiplied alpha
   if (c.a < 0.004) discard;
-  vec3 col = c.rgb * uBright;
+  vec3 col = c.rgb * uTint * uBright;
   col *= mix(uShade, vec3(1.0), smoothstep(0.0, 0.3, vH));   // darker where it meets the grass
   o = vec4(mix(col, uFogCol*c.a, vFog), c.a);
 }`;
 const objProg = program(objVS, objFS);
-const O = locations(objProg, ['uVP','uCam','uPos','uRight','uUp','uSize','uFlip','uSink','uFogNear','uFogFar','uTex','uFogCol','uShade','uBright']);
+const O = locations(objProg, ['uVP','uCam','uPos','uRight','uUp','uSize','uFlip','uSink','uFogNear','uFogFar','uTex','uFogCol','uShade','uBright','uTint']);
 const quadVAO = gl.createVertexArray();
 gl.bindVertexArray(quadVAO);
 gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
@@ -533,6 +533,7 @@ function drawObjects(fog){
     gl.uniform2fv(O.uSize, objSize(o));
     gl.uniform1f(O.uFlip, o.flip ? 1 : 0);
     gl.uniform1f(O.uSink, o.sink * o.size);
+    gl.uniform3fv(O.uTint, hex(o.tint || '#ffffff'));
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
   gl.depthMask(true);
@@ -906,7 +907,7 @@ function setPlacing(src){
 function addObject(src, x, z){
   if (cfg.objects.length >= MAX_OBJECTS) { toast(`Up to ${MAX_OBJECTS} objects`); return null; }
   const lib = LIB.get(src.slice(4));
-  const o = { src, x, z, size: lib ? lib.height : 5, sink: 0.03, flatten: 0.5, flip: false };
+  const o = { src, x, z, size: lib ? lib.height : 5, sink: 0.03, flatten: 0.5, flip: false, tint: (lib && lib.tint) || '#ffffff' };
   cfg.objects.push(o); texture(src);
   dirty = true; save();
   return o;
@@ -989,7 +990,7 @@ function buildObjectsPage(page){
   for (const item of LIB.values()) {
     const b = el('button', 'lib-card');
     b.dataset.src = 'lib:' + item.id;
-    b.innerHTML = `<img alt="" src="${item.url || svgURL(item.svg)}"><span>${item.name}</span>`;
+    b.innerHTML = `<img alt="" class="${item.url ? '' : 'mono'}" src="${item.url || svgURL(item.svg)}"><span>${item.name}</span>`;
     b.addEventListener('click', () => setPlacing(placing === b.dataset.src ? null : b.dataset.src));
     grid.append(b);
   }
@@ -1020,6 +1021,14 @@ function buildObjectsPage(page){
                   ['flatten', 'Flatten grass', 0, 1, 0.01, fmt.pct]];
   const syncs = [];
   selBox.append(selHead);
+  const tintRow = el('label', 'swatch tint');
+  const tintChip = el('span', 'chip'), tintText = el('span', 'swatch-text'), tintCode = el('i');
+  tintText.append(el('b', null, 'Color'), tintCode);
+  const tintInput = el('input'); tintInput.type = 'color'; tintInput.setAttribute('aria-label', 'Object color');
+  tintRow.append(tintChip, tintText, tintInput);
+  const tintSync = () => { if (!selected) return; const t = selected.tint || '#ffffff'; tintInput.value = t; tintChip.style.setProperty('--c', t); tintCode.textContent = t; };
+  tintInput.addEventListener('input', () => { if (!selected) return; selected.tint = tintInput.value; tintSync(); dirty = true; save(); });
+  syncs.push(tintSync); selBox.append(tintRow);
   for (const [key, label, min, max, step, f] of fields) {
     const row = el('label', 'row');
     const head = el('span', 'row-head'); head.append(el('span', null, label));
@@ -1040,7 +1049,7 @@ function buildObjectsPage(page){
     if (!selected) return;
     const s = selected, r = s.size * 0.6;
     const o = addObject(s.src, s.x + r, s.z + r * 0.4);
-    if (o) { Object.assign(o, { size: s.size, sink: s.sink, flatten: s.flatten, flip: !s.flip }); select(o); }
+    if (o) { Object.assign(o, { size: s.size, sink: s.sink, flatten: s.flatten, flip: !s.flip, tint: s.tint }); select(o); }
   });
   del.addEventListener('click', () => selected && removeObject(selected));
   acts.append(flip, dup, del);
@@ -1066,8 +1075,8 @@ function buildObjectsPage(page){
     list.replaceChildren(...cfg.objects.map(o => {
       const b = el('button', 'obj-chip');
       const url = sourceURL(o.src);
-      if (url) { const im = el('img'); im.alt = ''; im.src = url; b.append(im); } else b.textContent = '?';
       const lib = LIB.get(o.src.slice(4));
+      if (url) { const im = el('img', lib && !lib.url ? 'mono' : null); im.alt = ''; im.src = url; b.append(im); } else b.textContent = '?';
       b.setAttribute('aria-label', 'Select ' + (lib ? lib.name : 'image'));
       b.setAttribute('aria-pressed', String(o === selected));
       b.addEventListener('click', () => select(o));
