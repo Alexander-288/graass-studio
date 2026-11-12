@@ -6,13 +6,18 @@
 <title>Graass Studio</title>
 <meta name="description" content="Graass Studio: a stylized GPU grass field with wind, light and color you can tweak and share.">
 <meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0f6654">
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="manifest" href="site.webmanifest">
 <script>
   // apply a saved theme before first paint
   try { const t = localStorage.getItem("theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Hanken+Grotesk:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -56,6 +61,8 @@
 <div class="menu glass" id="menu" role="menu" aria-label="Presets"></div>
 <div class="toast" id="toast" role="status"></div>
 
+<div class="sel-ring" id="sel-ring" hidden></div>
+<script src="objects.js"></script>
 <script src="main.js"></script>
 </body>
 </html>

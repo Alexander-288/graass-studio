@@ -20,11 +20,14 @@ Then open http://localhost:5181.
 - **Blades:** height, height variety, width, tip sharpness, lean, twist, count.
 - **Color:** tips in sun, tips in shade, body, roots, haze, variation, fold shading.
 - **Light:** sun patch strength and size, cloud drift, brightness.
+- **Objects:** drop abstract things into the field (orb, blob, ring, cube, star sticker, arch, meditator, the Graass logo) or upload your own PNG, JPG, WebP, GIF or SVG. Drag to move; set size, how far it sinks into the grass and how much it flattens the grass around it. Objects always face the camera: they stand among the blades from a low angle and lie in the grass when you look straight down.
 - **View:** camera height, tilt, turn, field of view, haze distance, resolution, stats.
 
 The dock at the bottom has presets, randomize, pause, save image, copy share link and a light/dark switch for the interface. Settings are kept between visits, and a share link carries the whole scene.
 
-Shortcuts: `H` toggles the panel, `R` randomizes, `Space` pauses.
+Shortcuts: `H` toggles the panel, `R` randomizes, `Space` pauses, `Delete` removes the selected object, `Esc` cancels placing.
+
+Uploaded images are kept in your browser only; share links carry the built-in objects.
 
 ## How it works
 
@@ -40,6 +43,9 @@ Shortcuts: `H` toggles the panel, `R` randomizes, `Space` pauses.
 - `index.html`: page, panel and dock
 - `style.css`: glass interface, light and dark
 - `main.js`: WebGL setup, shaders, controls and render loop
+- `objects.js`: built-in object art (inline SVG)
+- `icons/`, `favicon.ico`, `site.webmanifest`: app icon pack
+- `tools/make_icons.py`: rebuilds the icon pack (needs Python with Pillow)
 
 ## License
 
