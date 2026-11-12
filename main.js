@@ -2,6 +2,7 @@
 
 // ================= settings =================
 const isSmall = matchMedia('(pointer: coarse)').matches;
+const MAX_OBJECTS = 24, PUSH_OBJECTS = 16;   // objects drawn / objects that push grass
 const DEFAULTS = {
   // wind
   angle: 70, gust: 0.28, speed: 0.35, gustSize: 20, flutter: 0.035, flutterSpeed: 1.6, gustGlow: 0.07,
@@ -15,6 +16,8 @@ const DEFAULTS = {
   // view
   camHeight: 19, camTilt: 48, camYaw: 0, fov: 45, fogNear: 30, fogFar: 62,
   resolution: isSmall ? 1.25 : 1.5, stats: true,
+  // placed objects: { src, x, z, size, sink, flatten, flip }
+  objects: [],
 };
 // keys a preset or randomize may change; the rest (count, camera, quality) stay yours
 const LOOK = ['angle','gust','speed','gustSize','flutter','flutterSpeed','gustGlow','height','heightVar','width','lean','twist','taper',
@@ -44,6 +47,8 @@ function loadCfg(){
   } catch (e) { saved = {}; }
   const c = { ...DEFAULTS };
   for (const k in saved) if (k in DEFAULTS && typeof saved[k] === typeof DEFAULTS[k]) c[k] = saved[k];
+  const known = new Set((window.OBJECT_LIBRARY || []).map(o => 'lib:' + o.id));
+  c.objects = Array.isArray(c.objects) ? c.objects.filter(o => o && typeof o.src === 'string' && (!o.src.startsWith('lib:') || known.has(o.src))).slice(0, MAX_OBJECTS) : [];
   return c;
 }
 const cfg = loadCfg();
@@ -76,6 +81,8 @@ uniform vec2 uWind, uOffset, uPatchOff;
 uniform float uGust, uGustScale, uFlutter, uFlutterSpeed, uLean;
 uniform float uHeight, uHeightVar, uWidth, uTwist, uTaper;
 uniform float uPatchScale, uFogNear, uFogFar;
+uniform vec4 uObj[16]; uniform int uObjCount;   // x, z, radius, strength
+out float vOcc;
 out float vT; out float vSide; out float vPatch; out float vFog; out float vJit; out float vGust;
 ${NOISE}
 vec2 rot(vec2 v, float a){ float c=cos(a), s=sin(a); return vec2(c*v.x-s*v.y, s*v.x+c*v.y); }
@@ -95,6 +102,22 @@ void main(){
 
   // constant-curvature arc, keeps blade length
   vec2 bdir = rot(wd, (rnd-0.5)*0.7);
+
+  // objects push nearby blades outward and flatten them a bit
+  float occ = 0.0;
+  for (int i = 0; i < 16; i++) {
+    if (i >= uObjCount) break;
+    vec4 ob = uObj[i];
+    vec2 dv = base - ob.xy; float d = length(dv);
+    float k = (1.0 - smoothstep(ob.z*0.3, ob.z, d)) * ob.w;
+    if (k > 0.0) {
+      vec2 away = d > 1e-3 ? dv/d : bdir;
+      bdir = normalize(mix(bdir, away, k) + 1e-4);
+      bend += k*0.75;
+      occ = max(occ, k);
+    }
+  }
+  vOcc = occ;
   float a = bend*t;
   float along = h*(1.0-cos(a))/bend;
   float up    = h*sin(a)/bend;
@@ -114,7 +137,7 @@ void main(){
 
 const grassFS = `#version 300 es
 precision highp float;
-in float vT; in float vSide; in float vPatch; in float vFog; in float vJit; in float vGust;
+in float vT; in float vSide; in float vPatch; in float vFog; in float vJit; in float vGust; in float vOcc;
 uniform vec3 uBase, uMid, uTipShade, uTipSun, uFogCol;
 uniform float uPatchStr, uVar, uSide, uGlow, uBright;
 out vec4 o;
@@ -126,6 +149,7 @@ void main(){
   col *= mix(1.0 - uSide, 1.0 + uSide*0.35, vSide*0.5+0.5);   // two-tone fold
   col *= 1.0 + vJit*uVar;                                      // per-blade variation
   col *= 1.0 + vGust*uGlow*vT;                                 // gusts catch a little light
+  col *= 1.0 - 0.16*vOcc*(1.0 - 0.6*vT);                         // soft contact shade near objects
   col *= uBright;
   o = vec4(mix(col, uFogCol, vFog), 1.0);
 }`;
@@ -156,8 +180,80 @@ const grassProg = program(grassVS, grassFS);
 const groundProg = program(groundVS, groundFS);
 const G = locations(grassProg, ['uVP','uCam','uTime','uWind','uOffset','uPatchOff','uGust','uGustScale','uFlutter','uFlutterSpeed','uLean',
   'uHeight','uHeightVar','uWidth','uTwist','uTaper','uPatchScale','uFogNear','uFogFar',
-  'uBase','uMid','uTipShade','uTipSun','uFogCol','uPatchStr','uVar','uSide','uGlow','uBright']);
+  'uBase','uMid','uTipShade','uTipSun','uFogCol','uPatchStr','uVar','uSide','uGlow','uBright','uObj','uObjCount']);
 const F = locations(groundProg, ['uVP','uCam','uFogNear','uFogFar','uBase','uFogCol','uBright']);
+
+// ---- objects: upright cards that always face the camera ----
+const objVS = `#version 300 es
+layout(location=0) in vec2 aUV;
+uniform mat4 uVP; uniform vec3 uCam, uPos, uRight, uUp; uniform vec2 uSize; uniform float uFlip, uSink, uFogNear, uFogFar;
+out vec2 vUV; out float vFog; out float vH;
+void main(){
+  vec3 p = uPos + uRight*(aUV.x-0.5)*uSize.x + uUp*(aUV.y*uSize.y - uSink);
+  vUV = vec2(uFlip > 0.5 ? 1.0-aUV.x : aUV.x, 1.0-aUV.y);
+  vH = aUV.y; vFog = smoothstep(uFogNear, uFogFar, distance(p, uCam));
+  gl_Position = uVP*vec4(p,1.0);
+}`;
+const objFS = `#version 300 es
+precision highp float;
+in vec2 vUV; in float vFog; in float vH;
+uniform sampler2D uTex; uniform vec3 uFogCol, uShade, uTint; uniform float uBright;
+out vec4 o;
+void main(){
+  vec4 c = texture(uTex, vUV);          // premultiplied alpha
+  if (c.a < 0.004) discard;
+  vec3 col = c.rgb * uTint * uBright;
+  col *= mix(uShade, vec3(1.0), smoothstep(0.0, 0.3, vH));   // darker where it meets the grass
+  o = vec4(mix(col, uFogCol*c.a, vFog), c.a);
+}`;
+const objProg = program(objVS, objFS);
+const O = locations(objProg, ['uVP','uCam','uPos','uRight','uUp','uSize','uFlip','uSink','uFogNear','uFogFar','uTex','uFogCol','uShade','uBright','uTint']);
+const quadVAO = gl.createVertexArray();
+gl.bindVertexArray(quadVAO);
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0, 1,0, 0,1, 1,1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.bindVertexArray(null);
+
+// textures by source: 'lib:<id>' for built-ins, 'img:<id>' for uploads (kept in localStorage)
+const textures = new Map();
+const LIB = new Map((window.OBJECT_LIBRARY || []).map(o => [o.id, o]));
+const svgURL = svg => 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg.trim());
+let sourceURL = function(src){
+  if (src.startsWith('lib:')) { const o = LIB.get(src.slice(4)); return o ? (o.url || svgURL(o.svg)) : null; }
+  if (src.startsWith('img:')) { try { return localStorage.getItem('graass:' + src); } catch (e) { return null; } }
+  return null;
+}
+function texture(src){
+  if (textures.has(src)) return textures.get(src);
+  const entry = { tex: null, aspect: 1, ready: false, missing: false };
+  textures.set(src, entry);
+  const url = sourceURL(src);
+  if (!url) { entry.missing = true; return entry; }
+  const img = new Image();
+  img.onload = () => {
+    // draw into a canvas so svg and huge images both end up a sane size
+    const max = 1024, k = Math.min(1, max / Math.max(img.naturalWidth || max, img.naturalHeight || max));
+    const w = Math.max(1, Math.round((img.naturalWidth || max) * k)), h = Math.max(1, Math.round((img.naturalHeight || max) * k));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0, w, h);
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    Object.assign(entry, { tex: t, aspect: w / h, ready: true });
+    dirty = true;
+    if (typeof refreshObjectUI === 'function') refreshObjectUI();
+  };
+  img.onerror = () => { entry.missing = true; };
+  img.src = url;
+  return entry;
+}
 
 // one blade: a triangle strip from base to a single tip vertex
 const SEGMENTS = 5;
@@ -334,6 +430,7 @@ function frame(now){
     if (shotPending) { shotPending = false; saveShot(); }
   }
 
+  updateRing();
   fpsFrames++;
   if (now - fpsSince > 500) {
     const fps = Math.round(fpsFrames * 1000 / (now - fpsSince));
@@ -379,6 +476,7 @@ function draw(){
   gl.uniform1f(G.uSide, cfg.sideShade);
   gl.uniform1f(G.uGlow, cfg.gustGlow);
   gl.uniform1f(G.uBright, cfg.brightness);
+  objectUniforms();
   gl.bindVertexArray(grassVAO);
   gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, bladeCount, bladeTotal);
 
@@ -392,6 +490,67 @@ function draw(){
   gl.uniform1f(F.uBright, cfg.brightness);
   gl.bindVertexArray(groundVAO);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  drawObjects(fog);
+}
+
+// cards always face the camera: from straight above they lie in the grass, from a low angle they stand in it.
+// The more they lie down, the higher they float so the grass only tucks around them.
+function camBasis(){
+  const F0 = v3.norm(v3.scale(view.cam, -1)), R = v3.norm(v3.cross(F0, [0, 1, 0]));
+  const down = -F0[1];                                   // 0 = looking across, 1 = looking straight down
+  const k = Math.min(1, Math.max(0, (down - 0.3) / 0.7));
+  const lift = cfg.height * 0.95 * k * k * (3 - 2 * k);
+  return [R, v3.cross(R, F0), lift, down];
+}
+function objSize(o){ const t = texture(o.src); return [o.size * t.aspect, o.size]; }
+
+function drawObjects(fog){
+  if (!cfg.objects.length) return;
+  // far to near so overlapping cards blend correctly; grass in front still hides them
+  const list = cfg.objects.map(o => [o, (o.x - view.cam[0]) ** 2 + (o.z - view.cam[2]) ** 2]).sort((a, b) => b[1] - a[1]);
+  gl.useProgram(objProg);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+  gl.uniformMatrix4fv(O.uVP, false, view.vp);
+  gl.uniform3fv(O.uCam, view.cam);
+  const [right, up, lift, down] = camBasis();
+  gl.uniform3fv(O.uRight, right);
+  gl.uniform3fv(O.uUp, up);
+  gl.uniform1f(O.uFogNear, cfg.fogNear);
+  gl.uniform1f(O.uFogFar, Math.max(cfg.fogFar, cfg.fogNear + 1));
+  gl.uniform3fv(O.uFogCol, fog);
+  // contact shade at the base only makes sense while standing up
+  gl.uniform3fv(O.uShade, hex(cfg.base).map(v => { const sh = 0.45 + v * 0.8; return sh + (1 - sh) * down; }));
+  gl.uniform1f(O.uBright, cfg.brightness);
+  gl.uniform1i(O.uTex, 0);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindVertexArray(quadVAO);
+  for (const [o] of list) {
+    const t = texture(o.src); if (!t.ready) continue;
+    gl.bindTexture(gl.TEXTURE_2D, t.tex);
+    gl.uniform3f(O.uPos, o.x, lift, o.z);
+    gl.uniform2fv(O.uSize, objSize(o));
+    gl.uniform1f(O.uFlip, o.flip ? 1 : 0);
+    gl.uniform1f(O.uSink, o.sink * o.size);
+    gl.uniform3fv(O.uTint, hex(o.tint || '#ffffff'));
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+}
+
+// grass push data for the shader
+const objData = new Float32Array(PUSH_OBJECTS * 4);
+function objectUniforms(){
+  const n = Math.min(cfg.objects.length, PUSH_OBJECTS);
+  objData.fill(0);
+  for (let i = 0; i < n; i++) {
+    const o = cfg.objects[i], [w] = objSize(o);
+    objData.set([o.x, o.z, Math.max(w * 0.5, o.size * 0.25) + 0.4, o.flatten], i * 4);
+  }
+  gl.uniform4fv(G.uObj, objData);
+  gl.uniform1i(G.uObjCount, n);
 }
 
 // ================= UI =================
@@ -421,6 +580,7 @@ const TABS = [
                      ['patchDrift', 'Cloud drift', 0, 1, 0.01, fmt.n2]]],
     ['Exposure', [['brightness', 'Brightness', 0.5, 1.5, 0.01, fmt.x]]],
   ]},
+  { id: 'objects', label: 'Objects', custom: page => buildObjectsPage(page), groups: [] },
   { id: 'view', label: 'View', groups: [
     ['Camera', [['camHeight', 'Height', 6, 45, 0.5, fmt.m, 'cam'], ['camTilt', 'Tilt', 20, 89, 1, fmt.deg, 'cam'],
                 ['camYaw', 'Turn', 0, 359, 1, fmt.deg, 'cam'], ['fov', 'Field of view', 20, 80, 1, fmt.deg, 'cam']]],
@@ -430,6 +590,9 @@ const TABS = [
 ];
 
 const controls = {};   // key -> sync function
+// object state lives here because the Objects tab is built with the other tabs
+let selected = null, placing = null, drag = null, refreshObjectUI = () => {};
+const imgMemory = new Map();   // uploads that did not fit in localStorage
 function el(tag, cls, html){ const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
 
 function onChange(key, effect){
@@ -517,6 +680,7 @@ for (const tab of TABS) {
   tabsEl.append(b); tabBtns.push(b);
   const page = el('section', 'page'); page.id = 'page-' + tab.id; page.setAttribute('role', 'tabpanel'); page.setAttribute('aria-labelledby', b.id);
   if (tab.dial) { page.append(el('div', 'group-title', 'Direction'), dial()); }
+  if (tab.custom) tab.custom(page);
   if (tab.colors) {
     page.append(el('div', 'group-title', 'Palette'));
     const grid = el('div', 'swatches'); tab.colors.forEach(c => grid.append(colorSwatch(c))); page.append(grid);
@@ -572,6 +736,8 @@ function applyCfg(next, message){
   for (const k in controls) controls[k]();
   statsEl.hidden = !cfg.stats;
   if (resChanged) resize(); else if (camChanged) { updateCamera(); requestRebuild(); }
+  if (!cfg.objects.includes(selected)) selected = null;
+  refreshObjectUI();
   dirty = true; save();
   if (message) toast(message);
 }
@@ -667,9 +833,11 @@ function saveShot(){
 
 // share link: settings packed into the URL hash
 $('b-share').addEventListener('click', () => {
-  const url = location.href.split('#')[0] + '#' + btoa(unescape(encodeURIComponent(JSON.stringify(cfg))));
+  // uploaded images are too big for a URL, so only built-in objects travel in the link
+  const shared = { ...cfg, objects: cfg.objects.filter(o => o.src.startsWith('lib:')) };
+  const url = location.href.split('#')[0] + '#' + btoa(unescape(encodeURIComponent(JSON.stringify(shared))));
   history.replaceState(null, '', url);
-  copyText(url, 'Link copied');
+  copyText(url, shared.objects.length < cfg.objects.length ? 'Link copied (uploaded images stay on this device)' : 'Link copied');
 });
 
 // theme
@@ -687,10 +855,241 @@ addEventListener('keydown', e => {
   if (e.key === 'h' || e.key === 'H') setPanel(panel.classList.contains('hidden'));
   else if (e.key === 'r' || e.key === 'R') randomize();
   else if (e.key === ' ' && !(e.target instanceof HTMLButtonElement)) { setPaused(!paused); e.preventDefault(); }
-  else if (e.key === 'Escape') openMenu(false);
+  else if (e.key === 'Escape') { openMenu(false); if (placing) setPlacing(null); else select(null); }
+  else if ((e.key === 'Delete' || e.key === 'Backspace') && selected) { removeObject(selected); e.preventDefault(); }
 });
 
+// ================= objects: placing, picking, dragging =================
+const ring = $('sel-ring');
+
+function project(x, y, z){
+  const m = view.vp;
+  const cx = m[0]*x + m[4]*y + m[8]*z + m[12], cy = m[1]*x + m[5]*y + m[9]*z + m[13], w = m[3]*x + m[7]*y + m[11]*z + m[15];
+  if (w <= 0) return null;
+  return [(cx / w * 0.5 + 0.5) * innerWidth, (0.5 - cy / w * 0.5) * innerHeight];
+}
+// where a screen point meets the ground
+function groundAt(px, py){
+  const cam = view.cam, F0 = v3.norm(v3.scale(cam, -1));
+  const R = v3.norm(v3.cross(F0, [0, 1, 0])), U = v3.cross(R, F0);
+  const ty = Math.tan(view.fovy / 2), tx = ty * (innerWidth / innerHeight);
+  const nx = px / innerWidth * 2 - 1, ny = 1 - py / innerHeight * 2;
+  const d = v3.add(F0, v3.add(v3.scale(R, nx * tx), v3.scale(U, ny * ty)));
+  if (d[1] > -1e-3) return null;
+  const t = -cam[1] / d[1];
+  return [cam[0] + d[0] * t, cam[2] + d[2] * t];
+}
+// on-screen box of an object card
+function screenBox(o){
+  const [, U, lift] = camBasis(), s0 = -o.sink * o.size, s1 = o.size * (1 - o.sink);
+  const base = project(o.x + U[0]*s0, lift + U[1]*s0, o.z + U[2]*s0), top = project(o.x + U[0]*s1, lift + U[1]*s1, o.z + U[2]*s1);
+  if (!base || !top) return null;
+  const h = base[1] - top[1], [w] = objSize(o);
+  const ww = h * (w / o.size);
+  return { x: base[0] - ww / 2, y: top[1], w: ww, h, bx: base[0], by: base[1] };
+}
+function pick(px, py){
+  const near = cfg.objects.map(o => [o, (o.x - view.cam[0]) ** 2 + (o.z - view.cam[2]) ** 2]).sort((a, b) => a[1] - b[1]);
+  for (const [o] of near) {
+    const b = screenBox(o);
+    if (b && px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h + 8) return o;
+  }
+  return null;
+}
+
+function select(o){ selected = o; refreshObjectUI(); }
+function setPlacing(src){
+  placing = src;
+  document.body.classList.toggle('placing', !!src);
+  refreshObjectUI();
+  if (src) toast('Click the field to place it');
+}
+function addObject(src, x, z){
+  if (cfg.objects.length >= MAX_OBJECTS) { toast(`Up to ${MAX_OBJECTS} objects`); return null; }
+  const lib = LIB.get(src.slice(4));
+  const o = { src, x, z, size: lib ? lib.height : 5, sink: 0.03, flatten: 0.5, flip: false, tint: (lib && lib.tint) || '#ffffff' };
+  cfg.objects.push(o); texture(src);
+  dirty = true; save();
+  return o;
+}
+function removeObject(o){
+  cfg.objects = cfg.objects.filter(x => x !== o);
+  if (selected === o) selected = null;
+  dirty = true; save(); refreshObjectUI();
+}
+
+canvas.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  const g = groundAt(e.clientX, e.clientY);
+  if (placing) {
+    if (g) {
+      const o = addObject(placing, g[0], g[1]);
+      if (o) selected = o;
+      if (!e.shiftKey) setPlacing(null); else refreshObjectUI();
+    }
+    return;
+  }
+  const o = pick(e.clientX, e.clientY);
+  if (o) {
+    select(o);
+    drag = { o, dx: g ? g[0] - o.x : 0, dz: g ? g[1] - o.z : 0 };
+    canvas.setPointerCapture(e.pointerId);
+    document.body.classList.add('dragging');
+  } else if (selected) select(null);
+});
+canvas.addEventListener('pointermove', e => {
+  if (drag) {
+    const g = groundAt(e.clientX, e.clientY);
+    if (g) { drag.o.x = g[0] - drag.dx; drag.o.z = g[1] - drag.dz; dirty = true; }
+  } else if (!placing && cfg.objects.length) {
+    canvas.style.cursor = pick(e.clientX, e.clientY) ? 'grab' : '';
+  }
+});
+const endDrag = () => { if (drag) { drag = null; save(); document.body.classList.remove('dragging'); } };
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+
+// ring under the selected object, follows it every frame
+function updateRing(){
+  const b = selected && texture(selected.src).ready ? screenBox(selected) : null;
+  if (!b) { ring.hidden = true; return; }
+  ring.hidden = false;
+  const w = Math.max(24, b.w * 0.9);
+  ring.style.transform = `translate(${b.bx - w / 2}px, ${b.by - w * 0.14}px)`;
+  ring.style.width = w + 'px'; ring.style.height = (w * 0.28) + 'px';
+}
+
+// uploads: keep a copy (max 1024px) so the object survives a reload
+function readUpload(file){
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = reject;
+    fr.onload = () => {
+      if (file.type === 'image/svg+xml') return resolve(fr.result);
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        const k = Math.min(1, 1024 / Math.max(img.width, img.height));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        resolve(c.toDataURL(file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png', 0.9));
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
+const storedURL = sourceURL;
+sourceURL = src => imgMemory.get(src) || storedURL(src);
+
+// ---- Objects tab ----
+function buildObjectsPage(page){
+  page.append(el('div', 'group-title', 'Add to the field'));
+  const grid = el('div', 'lib');
+  for (const item of LIB.values()) {
+    const b = el('button', 'lib-card');
+    b.dataset.src = 'lib:' + item.id;
+    b.innerHTML = `<img alt="" class="${item.url ? '' : 'mono'}" src="${item.url || svgURL(item.svg)}"><span>${item.name}</span>`;
+    b.addEventListener('click', () => setPlacing(placing === b.dataset.src ? null : b.dataset.src));
+    grid.append(b);
+  }
+  const up = el('label', 'lib-card upload');
+  up.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></svg><span>Your image</span>`;
+  const file = el('input'); Object.assign(file, { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif,image/svg+xml' });
+  file.setAttribute('aria-label', 'Upload an image or SVG');
+  up.append(file);
+  file.addEventListener('change', async () => {
+    const f = file.files[0]; file.value = '';
+    if (!f) return;
+    try {
+      const url = await readUpload(f);
+      const src = 'img:' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      try { localStorage.setItem('graass:' + src, url); } catch (e) { imgMemory.set(src, url); toast('Too big to keep after a reload'); }
+      if (!storedURL(src)) imgMemory.set(src, url);
+      setPlacing(src);
+    } catch (e) { toast('Could not read that image'); }
+  });
+  grid.append(up);
+  page.append(grid);
+  page.append(el('p', 'hint', 'Pick one, then click the field. Drag objects to move them. Shift+click places several.'));
+
+  // selected object
+  const selBox = el('div', 'sel-box');
+  const selHead = el('div', 'group-title', 'Selected');
+  const fields = [['size', 'Size', 0.5, 30, 0.1, v => v.toFixed(1) + 'm'], ['sink', 'Sink into grass', 0, 0.5, 0.01, fmt.pct],
+                  ['flatten', 'Flatten grass', 0, 1, 0.01, fmt.pct]];
+  const syncs = [];
+  selBox.append(selHead);
+  const tintRow = el('label', 'swatch tint');
+  const tintChip = el('span', 'chip'), tintText = el('span', 'swatch-text'), tintCode = el('i');
+  tintText.append(el('b', null, 'Color'), tintCode);
+  const tintInput = el('input'); tintInput.type = 'color'; tintInput.setAttribute('aria-label', 'Object color');
+  tintRow.append(tintChip, tintText, tintInput);
+  const tintSync = () => { if (!selected) return; const t = selected.tint || '#ffffff'; tintInput.value = t; tintChip.style.setProperty('--c', t); tintCode.textContent = t; };
+  tintInput.addEventListener('input', () => { if (!selected) return; selected.tint = tintInput.value; tintSync(); dirty = true; save(); });
+  syncs.push(tintSync); selBox.append(tintRow);
+  for (const [key, label, min, max, step, f] of fields) {
+    const row = el('label', 'row');
+    const head = el('span', 'row-head'); head.append(el('span', null, label));
+    const out = el('output'); head.append(out); row.append(head);
+    const input = el('input'); Object.assign(input, { type: 'range', min, max, step }); row.append(input);
+    const sync = () => {
+      if (!selected) return;
+      input.value = selected[key]; out.textContent = f(selected[key]);
+      input.style.setProperty('--p', ((selected[key] - min) / (max - min) * 100) + '%');
+    };
+    input.addEventListener('input', () => { if (!selected) return; selected[key] = +input.value; sync(); dirty = true; save(); });
+    syncs.push(sync); selBox.append(row);
+  }
+  const acts = el('div', 'actions');
+  const flip = el('button', 'chip-btn', 'Flip'), dup = el('button', 'chip-btn', 'Duplicate'), del = el('button', 'chip-btn danger', 'Delete');
+  flip.addEventListener('click', () => { if (selected) { selected.flip = !selected.flip; dirty = true; save(); } });
+  dup.addEventListener('click', () => {
+    if (!selected) return;
+    const s = selected, r = s.size * 0.6;
+    const o = addObject(s.src, s.x + r, s.z + r * 0.4);
+    if (o) { Object.assign(o, { size: s.size, sink: s.sink, flatten: s.flatten, flip: !s.flip, tint: s.tint }); select(o); }
+  });
+  del.addEventListener('click', () => selected && removeObject(selected));
+  acts.append(flip, dup, del);
+  selBox.append(acts);
+  page.append(selBox);
+
+  // everything in the field
+  const listHead = el('div', 'group-title');
+  const list = el('div', 'obj-list');
+  const clear = el('button', 'chip-btn wide', 'Remove all');
+  clear.addEventListener('click', () => { cfg.objects = []; selected = null; dirty = true; save(); refreshObjectUI(); });
+  page.append(listHead, list, clear);
+
+  refreshObjectUI = () => {
+    for (const c of grid.querySelectorAll('.lib-card[data-src]')) c.setAttribute('aria-pressed', String(c.dataset.src === placing));
+    selBox.hidden = !selected;
+    if (selected) {
+      const lib = LIB.get(selected.src.slice(4));
+      selHead.textContent = 'Selected · ' + (lib ? lib.name : 'Your image');
+      syncs.forEach(f => f());
+    }
+    listHead.textContent = `In the field · ${cfg.objects.length}/${MAX_OBJECTS}`;
+    list.replaceChildren(...cfg.objects.map(o => {
+      const b = el('button', 'obj-chip');
+      const url = sourceURL(o.src);
+      const lib = LIB.get(o.src.slice(4));
+      if (url) { const im = el('img', lib && !lib.url ? 'mono' : null); im.alt = ''; im.src = url; b.append(im); } else b.textContent = '?';
+      b.setAttribute('aria-label', 'Select ' + (lib ? lib.name : 'image'));
+      b.setAttribute('aria-pressed', String(o === selected));
+      b.addEventListener('click', () => select(o));
+      return b;
+    }));
+    clear.hidden = !cfg.objects.length;
+    if (!cfg.objects.length) list.append(el('p', 'hint', 'Nothing placed yet.'));
+  };
+  refreshObjectUI();
+}
+
 // ================= start =================
+cfg.objects.forEach(o => texture(o.src));
 statsEl.hidden = !cfg.stats;
 resize();
 requestAnimationFrame(frame);
